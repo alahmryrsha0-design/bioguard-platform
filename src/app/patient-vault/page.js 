@@ -1,0 +1,204 @@
+/**
+ * 🗝️ واجهة خزنة المريض الشخصية (Patient Vault)
+ * -----------------------------------------------------------------
+ * يستطيع المريض هنا:
+ *  - رؤية كل تقاريره الطبية المرفوعة من المجمعات الطبية.
+ *  - إدخال مفتاحه السري لفك تشفير أي تقرير وعرضه محلياً في المتصفح.
+ *  - مراجعة طلبات الوصول المعلّقة من الأطباء والموافقة عليها أو رفضها.
+ *
+ * ⚠️ ملاحظة أمان مهمة: المفتاح السري لا يُخزَّن أبداً في قاعدة البيانات،
+ * ويبقى فقط في ذاكرة المتصفح أثناء الجلسة الحالية.
+ */
+
+'use client'
+
+import { useEffect, useState } from 'react'
+import { supabase } from '../../lib/supabase'
+import {
+  getPatientReports,
+  decryptReport,
+  getPendingRequestsForPatient,
+  approveDoctorAccess,
+  rejectDoctorAccess,
+} from '../../services/vaultService'
+
+export default function PatientVaultPage() {
+  const [userId, setUserId] = useState(null)
+  const [reports, setReports] = useState([])
+  const [pendingRequests, setPendingRequests] = useState([])
+  const [secretKey, setSecretKey] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [activeReportId, setActiveReportId] = useState(null)
+  const [statusMsg, setStatusMsg] = useState('')
+
+  // 1️⃣ جلب هوية المستخدم الحالي ثم تقاريره وطلباته المعلّقة
+  useEffect(() => {
+    const loadData = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!session) {
+        setLoading(false)
+        return
+      }
+
+      setUserId(session.user.id)
+
+      const [{ reports: reportsData }, { requests: requestsData }] =
+        await Promise.all([
+          getPatientReports(session.user.id),
+          getPendingRequestsForPatient(session.user.id),
+        ])
+
+      setReports(reportsData)
+      setPendingRequests(requestsData)
+      setLoading(false)
+    }
+
+    loadData()
+  }, [])
+
+  // 2️⃣ فك تشفير تقرير معيّن وفتحه في تبويب جديد
+  const handleDecrypt = async (report) => {
+    if (!secretKey) {
+      setStatusMsg('⚠️ أدخلي مفتاحك السري أولاً')
+      return
+    }
+
+    setActiveReportId(report.id)
+    setStatusMsg('جاري فك التشفير...')
+
+    const { fileUrl, error } = await decryptReport(report.storage_path, secretKey)
+
+    if (error) {
+      setStatusMsg('❌ فشل فك التشفير: تأكدي من صحة المفتاح السري')
+    } else {
+      setStatusMsg('✅ تم فك التشفير بنجاح')
+      window.open(fileUrl, '_blank')
+    }
+
+    setActiveReportId(null)
+  }
+
+  // 3️⃣ الموافقة على طلب وصول طبيب
+  const handleApprove = async (requestId) => {
+    await approveDoctorAccess(requestId)
+    setPendingRequests((prev) => prev.filter((r) => r.id !== requestId))
+  }
+
+  // 4️⃣ رفض طلب وصول طبيب
+  const handleReject = async (requestId) => {
+    await rejectDoctorAccess(requestId)
+    setPendingRequests((prev) => prev.filter((r) => r.id !== requestId))
+  }
+
+  if (loading) {
+    return (
+      <main dir="rtl" className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <p className="text-slate-400">جاري تحميل خزنتك الآمنة...</p>
+      </main>
+    )
+  }
+
+  return (
+    <main dir="rtl" className="min-h-screen bg-slate-950 text-slate-100 px-6 py-10">
+      <div className="max-w-4xl mx-auto">
+        <h1 className="text-2xl font-bold mb-1">🗝️ خزنتي الطبية</h1>
+        <p className="text-slate-400 text-sm mb-8">
+          جميع تقاريرك مشفّرة، ولا يمكن فتحها إلا بمفتاحك السري الخاص
+        </p>
+
+        {/* 🔐 حقل إدخال المفتاح السري */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-8">
+          <label className="text-sm text-slate-300 font-medium block mb-2">
+            المفتاح السري لفك التشفير
+          </label>
+          <input
+            type="password"
+            value={secretKey}
+            onChange={(e) => setSecretKey(e.target.value)}
+            placeholder="أدخلي مفتاحك السري هنا مؤقتاً"
+            className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 outline-none rounded-lg px-4 py-2.5 text-slate-100 placeholder-slate-600"
+          />
+          {statusMsg && (
+            <p className="text-xs text-slate-400 mt-2">{statusMsg}</p>
+          )}
+        </div>
+
+        {/* 📁 قائمة طلبات الوصول المعلّقة من الأطباء */}
+        {pendingRequests.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-lg font-semibold mb-3">
+              ⏳ طلبات وصول بانتظار موافقتك
+            </h2>
+            <div className="flex flex-col gap-3">
+              {pendingRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="flex items-center justify-between bg-slate-900 border border-amber-500/30 rounded-lg px-4 py-3"
+                >
+                  <div>
+                    <p className="text-sm text-slate-200">
+                      طلب اطلاع على: {req.reports?.title || 'تقرير طبي'}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      سينتهي الوصول تلقائياً بعد 24 ساعة من الموافقة
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleApprove(req.id)}
+                      className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-sm font-medium px-3 py-1.5 rounded-lg"
+                    >
+                      موافقة
+                    </button>
+                    <button
+                      onClick={() => handleReject(req.id)}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium px-3 py-1.5 rounded-lg"
+                    >
+                      رفض
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 📄 قائمة التقارير الطبية */}
+        <h2 className="text-lg font-semibold mb-3">📄 تقاريري الطبية</h2>
+
+        {reports.length === 0 ? (
+          <p className="text-slate-500 text-sm">لا توجد تقارير مرفوعة بعد</p>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-4">
+            {reports.map((report) => (
+              <div
+                key={report.id}
+                className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col gap-3"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-emerald-400 text-xs bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded-full">
+                    🔒 مشفّر
+                  </span>
+                  <span className="text-slate-500 text-xs">
+                    {new Date(report.created_at).toLocaleDateString('ar')}
+                  </span>
+                </div>
+                <p className="text-slate-100 font-medium">{report.title}</p>
+                <button
+                  onClick={() => handleDecrypt(report)}
+                  disabled={activeReportId === report.id}
+                  className="mt-auto bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-100 text-sm font-medium py-2 rounded-lg transition-colors"
+                >
+                  {activeReportId === report.id ? 'جاري فك التشفير...' : 'فك التشفير وعرض التقرير'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}
